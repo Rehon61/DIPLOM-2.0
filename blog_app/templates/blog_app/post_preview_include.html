@@ -1,6 +1,5 @@
 {% load static %}
-{% load cache %}
-{% cache 60 post_preview post.id %}
+
 <div class="card mb-4">
     <div class="row g-0 p-3">
         <!-- Колонка с изображением -->
@@ -63,4 +62,3 @@
         </div>
     </div>
 </div>
-{% endcache %}

@@ -1,5 +1,7 @@
 from django import forms
 from .models import Comment, Category, Tag, Post
+from django.utils.text import slugify
+from unidecode import unidecode
 
 
 class CommentForm(forms.ModelForm):
@@ -54,13 +56,15 @@ class TagForm(forms.ModelForm):
         model = Tag
         fields = ['name']
 
-    def save(self, commit=True):
-        return tag
 
     def clean_name(self):
-        name = self.cleaned_data['name']
-        if Tag.objects.filter(name=name).exists():
-            raise forms.ValidationError('Тег с таким названием уже существует')
+        name = self.cleaned_data['name'].lower().strip().replace(' ', '_')
+        # Создаем slug таким же образом, как это делается в модели
+        slug = slugify(unidecode(name))
+
+        # Проверяем существование тега как по имени, так и по slug
+        if Tag.objects.filter(name=name).exists() or Tag.objects.filter(slug=slug).exists():
+            raise forms.ValidationError("Тег с таким названием уже существует.")
         return name
 
 
@@ -87,7 +91,7 @@ class PostForm(forms.ModelForm):
         fields = ['title', 'text', 'category', 'tags', 'cover_image']
         widgets = {
             'title': forms.TextInput(attrs={'class': 'form-control'}),
-            'text': forms.Textarea(attrs={'class': 'form-control', 'rows': 5}),
+            'text': forms.Textarea(attrs={'class': 'form-control', 'rows': 5, 'id': 'id_text', 'required': False}),
             'tags': forms.TextInput(attrs={'class': 'form-control', 'placeholder': 'Введите теги через запятую'}),
             'cover_image': forms.FileInput(attrs={'class': 'form-control'}),
         }

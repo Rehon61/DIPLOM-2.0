@@ -1,13 +1,13 @@
 from django.contrib import admin
 from django.urls import path, include
-from blog_app.views import index, about
+from blog_app.views import AboutView, IndexView
 from django.conf.urls.static import static
 from django.conf import settings
 
 urlpatterns = [
     path('admin/', admin.site.urls),
-    path("", index, name="main"),
-    path("about/", about, name="about"),
+    path("", IndexView.as_view(), name="main"),
+    path("about/", AboutView.as_view(), name="about"),
 
     # Через include подключим blog_app.urls
     # http://127.0.0.1:8000/blog/post/django-osnovnye-komandy

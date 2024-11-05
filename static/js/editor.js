@@ -1,6 +1,5 @@
 // Получение CSRF токена из DOM
 const getCsrfToken = () => document.querySelector('[name=csrfmiddlewaretoken]').value;
-
 // Конфигурация редактора
 const editorConfig = {
     spellChecker: false,
@@ -16,7 +15,6 @@ const editorConfig = {
         'preview', 'side-by-side', 'fullscreen'
     ]
 };
-
 // Асинхронный запрос предпросмотра
 async function fetchPreview(text) {
     try {
@@ -37,7 +35,6 @@ async function fetchPreview(text) {
         return "<p class='text-danger'>Ошибка при загрузке предпросмотра</p>";
     }
 }
-
 // Создание и отображение toast-уведомления
 function showToast(message, type = 'success') {
     // Создание элемента уведомления
@@ -60,7 +57,6 @@ function showToast(message, type = 'success') {
     const toast = new bootstrap.Toast(toastElement);
     toast.show();
 }
-
 // Асинхронная отправка формы
 async function submitForm(form) {
     try {
@@ -72,7 +68,7 @@ async function submitForm(form) {
                 'X-CSRFToken': getCsrfToken()
             }
         });
-
+        // Добавляем обработчик отправки формы
         if (!response.ok) throw new Error('Ошибка сети');
 
         const data = await response.json();
@@ -90,9 +86,7 @@ async function submitForm(form) {
         console.error('Ошибка отправки формы:', error);
     }
 }
-
-// Инициализация редактора
-function initializeEditor(textArea) {
+                function initializeEditor(textArea) {
     return new EasyMDE({
         ...editorConfig,
         element: textArea,
@@ -105,15 +99,13 @@ function initializeEditor(textArea) {
             hljs.highlightAll();
             return preview.innerHTML;
         }
-    });
+     });
 }
-
 // Основная функция инициализации
 document.addEventListener('DOMContentLoaded', function() {
     // Получение текстового поля редактора
     const textArea = document.getElementById('id_text');
     if (!textArea) return;
-
     const editor = initializeEditor(textArea);
 
     // Настройка обработчика отправки формы

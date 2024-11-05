@@ -1,18 +1,18 @@
-from django.shortcuts import render, HttpResponse, get_object_or_404
-from .dataset import dataset
-from .models import Post, Tag, Category
+from django.shortcuts import render, get_object_or_404, redirect
+from django.contrib import messages
+from django.contrib.auth.decorators import login_required
+from django.contrib.auth.mixins import LoginRequiredMixin
+from django.core.paginator import Paginator, EmptyPage, PageNotAnInteger
 from django.db.models import F,Q
 from django.http import JsonResponse
+from django.urls import reverse, reverse_lazy
 from django.views.decorators.csrf import csrf_exempt
-import json
-from .templatetags.md_to_html import markdown_to_html
+from django.views.generic import View, TemplateView, CreateView, UpdateView, ListView, DetailView
+from django.views.generic.edit import FormMixin
 from .forms import CommentForm, CategoryForm, TagForm, PostForm
-from django.shortcuts import render, redirect
-from .models import Post, Tag
-from django.contrib import messages
-from django.core.paginator import Paginator, EmptyPage,PageNotAnInteger
-from django.urls import reverse
-from django.contrib.auth.decorators import login_required, permission_required
+from .models import Post, Tag, Category
+from .templatetags.md_to_html import markdown_to_html
+import json
 
 menu = [
     {"name": "Главная", "alias": "main"},
@@ -22,204 +22,250 @@ menu = [
 ]
 
 
-def blog(request) -> HttpResponse:
-    search_query = request.GET.get("search", "")
-    search_category = request.GET.get("search_category")
-    search_tag = request.GET.get("search_tag")
-    search_comments = request.GET.get("search_comments")
-    page_number = request.GET.get('page', 1)
+class BlogView(ListView):
+    model = Post
+    template_name = 'blog_app/blog.html'
+    context_object_name = 'posts'
+    paginate_by = 4
 
-    posts = Post.objects.prefetch_related('tags', 'comments').select_related('author', 'category').filter(status="published")
+    def get_queryset(self):
+        queryset = Post.objects.prefetch_related('tags', 'comments').select_related('author', 'category').filter(status="published")
 
-    if search_query:
-        query = Q(title__icontains=search_query) | Q(text__icontains=search_query)
+        search_query = self.request.GET.get("search", "")
+        search_category = self.request.GET.get("search_category")
+        search_tag = self.request.GET.get("search_tag")
+        search_comments = self.request.GET.get("search_comments")
+        if search_query:
+            query = Q(title__icontains=search_query) | Q(text__icontains=search_query)
 
-        if search_category:
-            query |= Q(category__name__icontains=search_query)
+            if search_category:
+                query |= Q(category__name__icontains=search_query)
 
-        if search_tag:
-            query |= Q(tags__name__icontains=search_query)
+            if search_tag:
+                query |= Q(tags__name__icontains=search_query)
 
-        if search_comments:
-            query |= Q(comment__text__icontains=search_query)
+            if search_comments:
+                query |= Q(comments__text__icontains=search_query)
 
-        posts = posts.filter(query)
+            queryset = queryset.filter(query)
+        return queryset.distinct().order_by("-created_at")
 
-    posts = posts.distinct().order_by("-created_at")
-
-    paginator = Paginator(posts,4)
-
-    try:
-        posts = paginator.page(page_number)
-    except PageNotAnInteger:
-        posts = paginator.page(1)
-    except EmptyPage:
-        posts = paginator.page(paginator.num_pages)
-
-    breadcrumbs = [
+    def get_context_data(self, **kwargs):
+        context = super().get_context_data(**kwargs)
+        context['menu'] = menu
+        context['page_alias'] = 'blog'
+        context['breadcrumbs'] = [
             {'name': 'Главная', 'url': reverse('main')},
             {'name': 'Блог'},
         ]
-    return render(request, 'blog_app/blog.html', {
-            'posts': posts,
-            'breadcrumbs': breadcrumbs,
-            'menu': menu,
-            'page_alias': 'blog'
-        })
+        return context
 
 
+class PostDetailView(FormMixin, DetailView):
+    model = Post
+    template_name = 'blog_app/post_detail.html'
+    context_object_name = 'post'
+    form_class = CommentForm
 
+    def get_success_url(self):
+        return reverse('post_by_slug', kwargs={'slug': self.object.slug})
 
-def post_by_slug(request, post_slug):
-    post = get_object_or_404(Post, slug=post_slug)
-    breadcrumbs = [
-        {'name': 'Главная', 'url': reverse('main')},
-        {'name': 'Блог', 'url': reverse('blog')},
-        {'name': post.title}
-    ]
-
-    if f'post_{post.id}_viewed' not in request.session:
-        Post.objects.filter(id=post.id).update(views=F('views') + 1)
-        request.session[f'post_{post.id}_viewed'] = True
-
-    post.refresh_from_db()
-
-    if request.method == 'POST':
-        if request.user.is_authenticated:
-            form = CommentForm(request.POST)
-            if form.is_valid():
-
-                comment = form.save(commit=False)
-                comment.post = post
-                comment.author = request.user
-                comment.status = 'unchecked'
-                comment.save()
-                messages.success(request, 'Ваш комментарий находится на модерации.')
-                return redirect('post_by_slug', post_slug=post_slug)
-        else:
+    def get_object(self, queryset=None):
+        post = super().get_object(queryset)
+        session_key = f'post_{post.id}_viewed'
+        if not self.request.session.get(session_key, False):
+            Post.objects.filter(id=post.id).update(views=F('views') + 1)
+            self.request.session[session_key] = True
+            post.refresh_from_db()
+        return post
+    def get_context_data(self, **kwargs):
+        context = super().get_context_data(**kwargs)
+        comments_list = self.object.comments.filter(status='accepted').order_by('created_at')
+        paginator = Paginator(comments_list, 20)
+        page_number = self.request.GET.get('page')
+        try:
+            comments_page = paginator.page(page_number)
+        except PageNotAnInteger:
+            comments_page = paginator.page(1)
+        except EmptyPage:
+            comments_page = paginator.page(paginator.num_pages)
+        context['comments'] = comments_page
+        context['form'] = self.get_form()
+        context['menu'] = menu
+        # Добавьте breadcrumbs, если они вам нужны:
+        context['breadcrumbs'] = [
+            {'name': 'Главная', 'url': reverse('main')},
+            {'name': 'Блог', 'url': reverse('blog')},
+            {'name': self.object.title}
+        ]
+        return context
+    def post(self, request, *args, **kwargs):
+        if not request.user.is_authenticated:
             messages.error(request, 'Для добавления комментария необходимо войти в систему.')
             return redirect('login')
-    else:
-        form = CommentForm()
-#comments.filter(status='accepted').order_by('created_at')
-    comments_list = post.comments.filter(status='accepted').order_by('-created_at')
-    paginator = Paginator(comments_list, 20)  # 20 комментариев на страницу
-    page_number = request.GET.get('page')
 
-    try:
-        comments_page = paginator.page(page_number)
-    except PageNotAnInteger:
-        comments_page = paginator.page(1)
-    except EmptyPage:
-        comments_page = paginator.page(paginator.num_pages)
+        self.object = self.get_object()
+        form = self.get_form()
 
-    context = {
-        'post': post,
-        'form': form,
-        'comments': comments_page,
-        'breadcrumbs': breadcrumbs,
-    }
-
-    return render(request, 'blog_app/post_detail.html', context)
-
-
-def index(request) -> HttpResponse:
-    context = {
-        'menu': menu,
-        'page_alias': 'main'
-    }
-    return render(request, 'index.html', context=context)
-
-
-def about(request):
-    breadcrumbs = [
-        {'name': 'Главная', 'url': reverse('main')},
-        {'name': 'О проекте'},
-    ]
-    return render(request, 'about.html', {
-        'breadcrumbs': breadcrumbs,
-        'menu': menu,
-        'page_alias': 'about'
-    })
-
-@login_required
-def add_post(request):
-    if request.method == "POST":
-        form = PostForm(request.POST, request.FILES)
         if form.is_valid():
-            post = form.save(commit=True, author=request.user)
-            messages.success(request, 'Пост успешно создан и отправлен на модерацию.')
-            return redirect('add_post')
-    else:
-        form = PostForm()
+            comment = form.save(commit=False)
+            comment.post = self.object
+            comment.author = request.user
+            comment.status = 'unchecked'
+            comment.save()
+            messages.success(request, 'Ваш комментарий находится на модерации.')
+            return redirect(self.get_success_url())
+        else:
+            return self.form_invalid(form)
 
-    return render(request, 'blog_app/add_post.html', {'form': form, 'menu': menu})
+class IndexView(TemplateView):
+    template_name = 'index.html'
 
-@login_required
-def update_post(request, post_slug):
-    post = get_object_or_404(Post, slug=post_slug)
-
-    if request.method == "POST":
-        form = PostForm(request.POST, request.FILES, instance=post)
-        if form.is_valid():
-            form.save()
-            messages.success(request, 'Пост успешно обновлен и отправлен на модерацию.')
-            return redirect('update_post', post_slug=post_slug)
-    else:
-        form = PostForm(instance=post)
-    return render(request, 'blog_app/add_post.html', {'form': form, 'menu':menu})
+    def get_context_data(self, **kwargs):
+        context = super().get_context_data(**kwargs)
+        context['menu'] = menu
+        context['page_alias'] = 'main'
+        return context
 
 
+class AboutView(View):
+    def get(self,request):
+        breadcrumbs = [
+            {'name': 'Главная', 'url': reverse('main')},
+            {'name': 'О проекте'},
+        ]
+        return render(request, 'about.html', {
+            'breadcrumbs': breadcrumbs,
+            'menu': menu,
+            'page_alias': 'about'
+        })
 
-def posts_by_tag(request, tag):
-    """
-    Функция представления для отображения страницы постов с определенным тегом.
-    """
-    context = {
-        'posts': Post.objects.filter(tags__slug=tag),
-        'menu': menu,
-        'page_alias': 'blog'
-    }
-    return render(request, 'blog_app/blog.html', context=context)
+class AddPostView(LoginRequiredMixin, CreateView):
+    model = Post
+    form_class = PostForm
+    template_name = 'blog_app/add_post.html'
 
-def posts_by_category(request, category):
-    context = {
-        'posts': Category.objects.get(slug=category).posts.all(),
-        'menu': menu,
-        'page_alias': 'blog'
-    }
-    return render(request, 'blog_app/blog.html', context=context)
+
+    def form_valid(self, form):
+        # Сохраняем форму с указанием автора
+        self.object = form.save(commit=True, author=self.request.user)
+        # Добавляем сообщение об успехе
+        return JsonResponse({
+            'success': True,
+            'message': 'Пост успешно создан',
+            'redirect_url': reverse('blog')
+        })
+
+    def form_invalid(self, form):
+        return JsonResponse({
+            'success': False,
+            'message': 'Ошибка в форме',
+            'errors': form.errors
+        }, status=400)
+
+    def get_context_data(self, **kwargs):
+        context = super().get_context_data(**kwargs)
+        context['menu'] = menu
+        return context
+
+class UpdatePostView(LoginRequiredMixin, UpdateView):
+    model = Post
+    form_class = PostForm
+    template_name = 'blog_app/add_post.html'
+    def get_object(self, queryset=None):
+        # Получаем объект поста по slug
+        return get_object_or_404(Post, slug=self.kwargs['post_slug'])
+    def form_valid(self, form):
+        self.object = form.save()
+        return JsonResponse({
+            'success': True,
+            'message': 'Пост успешно обновлен',
+            'redirect_url': reverse('post_by_slug', kwargs={'slug': self.object.slug})
+        })
+
+    def form_invalid(self, form):
+        return JsonResponse({
+            'success': False,
+            'message': 'Ошибка в форме',
+            'errors': form.errors
+        }, status=400)
+
+    def get_context_data(self, **kwargs):
+        context = super().get_context_data(**kwargs)
+        context['menu'] = menu
+        return context
+
+
+
+class PostsByTagListView(ListView):
+    model = Post
+    template_name = 'blog_app/blog.html'
+    context_object_name = 'posts'
+    paginate_by = 4
+
+    def get_queryset(self):
+        tag = self.kwargs['tag']
+        posts = Post.objects.filter(tags__slug=tag).filter(status='published')
+        return posts
+
+    def get_context_data(self, **kwargs):
+        context = super().get_context_data(**kwargs)
+        context['menu'] = menu
+        context['page_alias'] = 'blog'
+        return context
+
+class PostsByCategoryListView(ListView):
+    model = Post
+    template_name = 'blog_app/blog.html'
+    context_object_name = 'posts'
+    paginate_by = 4
+
+    def get_queryset(self):
+        category = self.kwargs['category']
+        return Post.objects.select_related('author', 'category')\
+                         .prefetch_related('tags', 'comments')\
+                         .filter(category__slug=category, status='published')
+    def get_context_data(self, **kwargs):
+        context = super().get_context_data(**kwargs)
+        context['menu'] = menu
+        context['page_alias'] = 'blog'
+        context['breadcrumbs'] = [
+            {'name': 'Главная', 'url': reverse('main')},
+            {'name': 'Блог', 'url': reverse('blog')},
+            {'name': Category.objects.get(slug=self.kwargs['category']).name}
+        ]
+        return context
 
 #@csrf_exempt
-def preview_post(request):
-    if request.method == "POST":
+class PreviewPostView(View):
+    http_method_names = ['post']
+    def post(self, request, *args, **kwargs):
         data = json.loads(request.body)
         text = data.get("text", "")
         html = markdown_to_html(text)
         return JsonResponse({"html": html})
 
-@login_required
-def add_category(request):
-    context = {"menu": menu}
 
-    if request.method == "POST":
+class AddCategoryView(LoginRequiredMixin,View ):
+    def get(self, request):
+        context = {
+            'menu': menu,
+            'form': CategoryForm(),
+            "operation_title": 'Добавить категорию',
+            'operation_header': 'Добавит новую категорию',
+            'submit_button_text': 'Создать',
+        }
+        return render(request, 'blog_app/category_form.html', context)
+
+    def post(self,request):
         form = CategoryForm(request.POST)
         if form.is_valid():
             form.save()
             messages.success(request, f"Категория '{form.cleaned_data['name']}' успешно добавлена!")
             return redirect('add_category')
         else:
-            messages.error(request, 'Пожалуйста, исправьте ошибки ниже.')
-    else:
-        form = CategoryForm()
-
-    context.update({
-        "form": form,
-        "operation_title": "Добавить категорию",
-        "operation_header": "Добавить новую категорию",
-        "submit_button_text": "Создать",
-    })
-    return render(request, "blog_app/category_form.html", context)
+            messages.error(request,'Пожалуйста, исправьте ошибки ниже.')
+            return redirect('add_category')
 
 @login_required
 def update_category(request, category_slug):
@@ -245,22 +291,58 @@ def update_category(request, category_slug):
     })
     return render(request, "blog_app/category_form.html", context)
 
-@login_required
-def add_tag(request):
 
-    context = {'menu': menu}
+class UpdateCategoryView(LoginRequiredMixin, UpdateView):
+    model = Category
+    form_class = CategoryForm
+    template_name = "blog_app/category_form.html"
 
-    if request.method == 'GET':
-        form = TagForm()
-        context['form'] = form
-        return render(request, 'blog_app/add_tag.html', context)
+    def get_object(self, queryset=None):
+        return get_object_or_404(Category, slug=self.kwargs['category_slug'])
 
-    elif request.method =='POST':
-        form = TagForm(request.POST)
-        if form.is_valid():
-            form.save()
-            name = form.cleaned_data['name']
-            context['message'] = f'Тег {name} успешно добавлен!'
-            return render(request, 'blog_app/add_tag.html', context)
-        context['form'] = form
-        return render(request, 'blog_app/add_tag.html', context)
+    def get_success_url(self):
+        return reverse_lazy('posts_by_category', kwargs={'category': self.object.slug})
+
+    def get_context_data(self, **kwargs):
+
+        context = super().get_context_data(**kwargs)
+        context["menu"] = menu
+        context["operation_title"] = "Обновить категорию"
+        context["operation_header"] = "Обновить категорию"
+        context["submit_button_text"] = "Сохранить"
+        return context
+
+    def form_valid(self, form):
+        response = super().form_valid(form)
+        messages.success(self.request, f"Категория '{form.cleaned_data['name']}' успешно обновлена.")
+        return response
+
+    def form_invalid(self, form):
+        messages.error(self.request, "Пожалуйста, исправьте ошибки ниже.")
+        return super().form_invalid(form)
+
+
+class AddTagView(LoginRequiredMixin, CreateView):
+    model = Tag
+    form_class = TagForm
+    template_name = 'blog_app/add_tag.html'
+    success_url = reverse_lazy("add_tag")
+
+    def get_context_data(self,**kwargs):
+        context = super().get_context_data(**kwargs)
+        context['menu'] = menu
+        return context
+
+    def form_valid(self, form):
+        response = super().form_valid(form)
+        messages.success(self.request, f"Тег {form.instance.name} успешно добавлен!")
+        return response
+
+    def form_invalid(self, form):
+        messages.error(self.request, "Ошибка при добавлении тега. Проверьте введенные данные.")
+        return super().form_invalid(form)
+
+
+
+
+
